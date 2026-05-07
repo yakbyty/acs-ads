@@ -497,45 +497,25 @@ function readGroupMap_(ss) {
 
 function validateSourceRawSheets_(sourceSs) {
   const required = [
+    CFG.RAW_CAMP_1,
+    CFG.RAW_CAMP_7,
     CFG.RAW_CAMP_30,
+    CFG.RAW_CAMP_365,
     CFG.RAW_CAMP_DAY_30,
     CFG.RAW_PMAX_PROD_30,
     CFG.RAW_PMAX_PROD_180,
     CFG.RAW_PMAX_ZOMBIES_365,
     CFG.RAW_SEARCH_TERMS_30,
     CFG.RAW_PMAX_ASSETS,
-    CFG.RAW_ASSET_GROUPS_30,
-    CFG.RAW_CAMP_1,
-    CFG.RAW_CAMP_7,
-    CFG.RAW_CAMP_365,
+    CFG.RAW_ASSET_GROUPS_30
   ];
 
-  const toc = sourceSs.getSheetByName(CFG.SOURCE_TOC);
-  const allowedByToc = new Set();
-
-  if (toc) {
-    const values = toc.getDataRange().getValues();
-    const headers = values[0] || [];
-    const sheetCol = headers.indexOf('Лист');
-    const canUseCol = headers.indexOf('Можно использовать как источник');
-
-    if (sheetCol >= 0) {
-      for (let i = 1; i < values.length; i++) {
-        const sheetName = str_(values[i][sheetCol]);
-        const canUse = canUseCol >= 0 ? str_(values[i][canUseCol]).toUpperCase() : 'YES';
-        if (sheetName && canUse !== 'NO') allowedByToc.add(sheetName);
-      }
-    }
-  }
-
-  const missing = [];
-  required.forEach(name => {
-    if (!sourceSs.getSheetByName(name)) missing.push(name);
-    if (allowedByToc.size && !allowedByToc.has(name)) missing.push(name + ' (нет YES в оглавлении)');
-  });
+  const missing = required.filter(name => !sourceSs.getSheetByName(name));
 
   if (missing.length) {
-    throw new Error('В RAW-таблице не найдены обязательные источники: ' + missing.join(', '));
+    throw new Error(
+      'В RAW-таблице не найдены обязательные листы: ' + missing.join(', ')
+    );
   }
 }
 
