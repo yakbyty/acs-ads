@@ -10,6 +10,9 @@
  * - r_search_terms_30
  * - r_assets_pmax
  * - r_asset_groups_30
+  RAW_CAMP_1: 'r_campaign_1',
+  RAW_CAMP_7: 'r_campaign_7',
+  RAW_CAMP_365: 'r_campaign_365',
  *
  * OPTIONAL HELPER SHEET:
  * - PRODUCT_GROUP_MAP
@@ -76,6 +79,7 @@ const CFG = {
   OUT_SEARCH_WINNERS: 'SIG_Search_Winners',
   OUT_CG: 'SIG_Creatives_Groups',
   OUT_CI: 'SIG_Creatives_Issues',
+  OUT_PERIOD_COMPARE: 'SIG_Period_Compare',
 
   // WORKFLOW
   OUT_TASK_LOG: 'TASK_LOG',
@@ -227,9 +231,16 @@ function buildControlPanelFinal() {
   const productAudit = buildProductAuditQueue_(bleeders, zombies, S);
   const money = buildMoneyControl_(campaigns, winners, bleeders, zombies, duplicates, adGroupControl);
   const summary = buildSummary_(campaigns, winners, bleeders, zombies, searchWaste, searchWinners, creativeGroups, creativeIssues, productAudit);
+  const periodCompare = buildPeriodCompare_(
+    raw.camp1,
+    raw.camp7,
+    raw.camp30,
+    raw.camp365
+  );
 
   writeSummary_(ss, summary);
   writeMoneyControl_(ss, money);
+  writePeriodCompare_(ss, periodCompare);
   writeCategoryControl_(ss, categoryControl);
   writeCampaigns_(ss, campaigns);
   writeAdGroupControl_(ss, adGroupControl);
@@ -492,7 +503,10 @@ function validateSourceRawSheets_(sourceSs) {
     CFG.RAW_PMAX_ZOMBIES_365,
     CFG.RAW_SEARCH_TERMS_30,
     CFG.RAW_PMAX_ASSETS,
-    CFG.RAW_ASSET_GROUPS_30
+    CFG.RAW_ASSET_GROUPS_30,
+    CFG.RAW_CAMP_1,
+    CFG.RAW_CAMP_7,
+    CFG.RAW_CAMP_365,
   ];
 
   const toc = sourceSs.getSheetByName(CFG.SOURCE_TOC);
@@ -1974,6 +1988,23 @@ function buildPageStatuses_(data) {
   pages.push(makePageStatus_(CFG.OUT_CHANGE_LOG, 'История внесенных изменений', CFG.STATUS_OK, 0, 0, 'Использовать для подтверждения факта изменений'));
   pages.push(makePageStatus_(CFG.OUT_VERIFICATION_QUEUE, 'Очередь задач на проверку результата', verPending > 0 ? CFG.STATUS_WARN : CFG.STATUS_OK, 0, verPending, verPending > 0 ? 'Есть задачи на верификацию' : 'Все ок'));
 
+  const periodCrit = data.periodCompare
+    ? data.periodCompare.filter(r => ['АВАРИЯ', 'ДЕГРАДАЦИЯ'].indexOf(str_(r[13])) >= 0).length
+    : 0;
+
+  const periodWarn = data.periodCompare
+    ? data.periodCompare.filter(r => ['НЕСТАБИЛЬНО', 'СЕЗОННОСТЬ'].indexOf(str_(r[13])) >= 0).length
+    : 0;
+
+  pages.push(makePageStatus_(
+    CFG.OUT_PERIOD_COMPARE,
+    'Сравнение рекламы за 1 / 7 / 30 / 365 дней и управленческие выводы',
+    periodCrit > 0 ? CFG.STATUS_CRIT : (periodWarn > 0 ? CFG.STATUS_WARN : CFG.STATUS_OK),
+    periodCrit,
+    periodWarn,
+    periodCrit > 0 ? 'Проверить аварии и деградацию по кампаниям' : 'Контролировать тренды'
+  ));
+
   return pages;
 }
 
@@ -2643,5 +2674,183 @@ function formatIndexAllSheets_(sh, rowCount) {
     if (v === CFG.STATUS_OK) cell.setBackground('#d9ead3');
     if (v === CFG.STATUS_WARN) cell.setBackground('#fff2cc');
     if (v === CFG.STATUS_CRIT) cell.setBackground('#f4cccc');
+  }
+}
+
+function buildPeriodCompare_(camp1, camp7, camp30, camp365) {
+  const d1 = aggregateCampaignsForPeriod_(camp1);
+  const d7 = aggregateCampaignsForPeriod_(camp7);
+  const d30 = aggregateCampaignsForPeriod_(camp30);
+  const d365 = aggregateCampaignsForPeriod_(camp365);
+
+  const allCampaigns = new Set([
+    ...Object.keys(d1),
+    ...Object.keys(d7),
+    ...Object.keys(d30),
+    ...Object.keys(d365)
+  ]);
+
+  const out = [];
+
+  Array.from(allCampaigns).forEach(campaign => {
+    const p1 = d1[campaign] || emptyPeriod_();
+    const p7 = d7[campaign] || emptyPeriod_();
+    const p30 = d30[campaign] || emptyPeriod_();
+    const p365 = d365[campaign] || emptyPeriod_();
+
+    const trend = detectCampaignPeriodTrend_(p1, p7, p30, p365);
+    const conclusion = buildCampaignManagementConclusion_(trend);
+
+    out.push([
+      campaign,
+      p1.cost, p1.roas, p1.conv,
+      p7.cost, p7.roas, p7.conv,
+      p30.cost, p30.roas, p30.conv,
+      p365.cost, p365.roas, p365.conv,
+      trend,
+      conclusion
+    ]);
+  });
+
+  out.sort((a, b) => num_(b[7]) - num_(a[7]));
+  return out;
+}
+
+function aggregateCampaignsForPeriod_(data) {
+  const h = data.headers;
+  const rows = data.rows;
+
+  const iCamp = idx_(h, 'campaign.name');
+  const iCost = idx_(h, 'cost', 'metrics.cost_micros');
+  const iConv = idx_(h, 'metrics.conversions');
+  const iValue = idx_(h, 'metrics.conversions_value');
+
+  const map = {};
+
+  rows.forEach(r => {
+    const campaign = iCamp >= 0 ? str_(r[iCamp]) : '';
+    if (!campaign) return;
+
+    if (!map[campaign]) {
+      map[campaign] = { cost: 0, value: 0, conv: 0, roas: 0 };
+    }
+
+    map[campaign].cost += iCost >= 0 ? num_(r[iCost]) : 0;
+    map[campaign].value += iValue >= 0 ? num_(r[iValue]) : 0;
+    map[campaign].conv += iConv >= 0 ? num_(r[iConv]) : 0;
+  });
+
+  Object.keys(map).forEach(k => {
+    map[k].roas = safeDiv_(map[k].value, map[k].cost);
+  });
+
+  return map;
+}
+
+function emptyPeriod_() {
+  return { cost: 0, value: 0, conv: 0, roas: 0 };
+}
+
+function detectCampaignPeriodTrend_(p1, p7, p30, p365) {
+  if (p1.cost > 0 && p1.conv === 0 && p7.conv > 0) return 'АВАРИЯ';
+
+  if (p1.roas > p7.roas && p7.roas > p30.roas && p30.roas > p365.roas) {
+    return 'УСТОЙЧИВЫЙ РОСТ';
+  }
+
+  if (p1.roas < p7.roas && p7.roas < p30.roas && p30.cost > 0) {
+    return 'ДЕГРАДАЦИЯ';
+  }
+
+  if (p30.roas > 0 && p1.roas > p30.roas * 1.5) {
+    return 'ВОССТАНОВЛЕНИЕ';
+  }
+
+  if (p30.roas > 0 && p365.roas > p30.roas * 1.5) {
+    return 'СЕЗОННОСТЬ';
+  }
+
+  if (p7.roas > 0 && p1.roas > 0 && Math.abs(p1.roas - p7.roas) / p7.roas > 0.5) {
+    return 'НЕСТАБИЛЬНО';
+  }
+
+  return 'СТАБИЛЬНО';
+}
+
+function buildCampaignManagementConclusion_(trend) {
+  if (trend === 'АВАРИЯ') {
+    return 'Проверить цели, фид, сайт, остатки, модерацию и ставки. Возможна техническая поломка или резкая потеря спроса.';
+  }
+
+  if (trend === 'УСТОЙЧИВЫЙ РОСТ') {
+    return 'Можно постепенно масштабировать бюджет. Перед ростом проверить наличие товара и производственные ограничения.';
+  }
+
+  if (trend === 'ДЕГРАДАЦИЯ') {
+    return 'Эффективность ухудшается. Проверить конкурентов, цены, качество трафика, ассортимент и выгорание креативов.';
+  }
+
+  if (trend === 'ВОССТАНОВЛЕНИЕ') {
+    return 'Система начала восстанавливаться. Не вмешиваться резко. Наблюдать еще 7–14 дней.';
+  }
+
+  if (trend === 'СЕЗОННОСТЬ') {
+    return 'Есть признаки сезонного спроса. Не делать выводы только по 30 дням.';
+  }
+
+  if (trend === 'НЕСТАБИЛЬНО') {
+    return 'Высокая волатильность. Нужен ручной контроль и осторожное изменение бюджета.';
+  }
+
+  return 'Система выглядит стабильной.';
+}
+
+function writePeriodCompare_(ss, rows) {
+  const sh = resetSheet_(ss, CFG.OUT_PERIOD_COMPARE);
+
+  setHeader_(sh, [
+    'Campaign',
+    'Cost 1d', 'ROAS 1d', 'Conv 1d',
+    'Cost 7d', 'ROAS 7d', 'Conv 7d',
+    'Cost 30d', 'ROAS 30d', 'Conv 30d',
+    'Cost 365d', 'ROAS 365d', 'Conv 365d',
+    'Trend',
+    'Управленческий вывод'
+  ], '#d9e2f3');
+
+  if (rows.length) {
+    sh.getRange(2, 1, rows.length, 15).setValues(rows);
+  }
+
+  formatNumbersStandard_(sh, {
+    costCols: [2, 5, 8, 11],
+    roasCols: [3, 6, 9, 12],
+    convCols: [4, 7, 10, 13],
+    intCols: []
+  });
+
+  wrapCols_(sh, [1, 15]);
+  applyPeriodTrendColors_(sh);
+  sh.autoResizeColumns(1, 15);
+}
+
+function applyPeriodTrendColors_(sh) {
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return;
+
+  const rng = sh.getRange(2, 14, lastRow - 1, 1);
+  const vals = rng.getValues();
+
+  for (let i = 0; i < vals.length; i++) {
+    const cell = rng.getCell(i + 1, 1);
+    const v = str_(vals[i][0]);
+
+    if (v === 'УСТОЙЧИВЫЙ РОСТ' || v === 'СТАБИЛЬНО') {
+      cell.setBackground('#d9ead3');
+    } else if (v === 'ДЕГРАДАЦИЯ' || v === 'АВАРИЯ') {
+      cell.setBackground('#f4cccc');
+    } else if (v === 'НЕСТАБИЛЬНО' || v === 'СЕЗОННОСТЬ' || v === 'ВОССТАНОВЛЕНИЕ') {
+      cell.setBackground('#fff2cc');
+    }
   }
 }
