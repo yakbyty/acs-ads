@@ -277,7 +277,8 @@ function buildControlPanelFinal() {
     duplicates,
     productAudit,
     tasks,
-    money
+    money,
+periodCompare
   });
 
   writeIndex_(ss, pageStatuses);
